@@ -2,7 +2,8 @@ pipeline {
     agent any
 
     environment {
-        DOCKER_IMAGE = "captainnoor1/devops-examapp:latest"
+        IMAGE_TAG = "${BUILD_NUMBER}"
+        DOCKER_IMAGE = "captainnoor1/devops-examapp:${BUILD_NUMBER}"
         SCANNER_HOME = tool 'sonar-scanner'
         COMPOSE_PROJECT_NAME = "devopsexamapp"
     }
@@ -16,21 +17,19 @@ pipeline {
             }
         }
 
-        stage('Verify Docker & Compose') {
+        stage('Verify Docker') {
             steps {
-                sh '''
-                docker --version
-                docker compose version
-                '''
+                sh 'docker --version'
+                sh 'docker compose version'
             }
         }
 
-        stage('File System Scan (Trivy)') {
+        stage('Trivy Scan') {
             steps {
                 sh '''
                 trivy fs --scanners vuln,misconfig \
                 --format table \
-                -o trivy-fs-report.txt .
+                -o trivy-report.txt .
                 '''
             }
         }
@@ -61,7 +60,7 @@ pipeline {
             }
         }
 
-        stage('Push to Docker Hub') {
+        stage('Push Docker Image') {
             steps {
                 script {
                     withDockerRegistry(credentialsId: 'docker') {
@@ -71,40 +70,23 @@ pipeline {
             }
         }
 
-        stage('Docker Scout Analysis (Optional)') {
-            steps {
-                sh '''
-                docker scout version >/dev/null 2>&1 || exit 0
-
-                docker scout quickview ${DOCKER_IMAGE} || true
-                docker scout cves ${DOCKER_IMAGE} || true
-                docker scout recommendations ${DOCKER_IMAGE} || true
-                '''
-            }
-        }
-
-        stage('Deploy with Docker Compose') {
+        stage('Deploy') {
             steps {
                 sh '''
                 export COMPOSE_PROJECT_NAME=${COMPOSE_PROJECT_NAME}
+                export IMAGE_TAG=${IMAGE_TAG}
 
-                echo "Cleaning previous deployment..."
+                echo "Stopping old deployment..."
                 docker compose down --remove-orphans --volumes || true
 
-                echo "Force removing conflicting containers..."
-                docker rm -f flask_app mysql_db 2>/dev/null || true
+                echo "Pulling latest image..."
+                docker compose pull
 
-                echo "Starting fresh deployment..."
-                docker compose up -d --build
+                echo "Starting new containers..."
+                docker compose up -d --force-recreate
 
-                echo "Waiting for MySQL to be ready..."
-                timeout 120s bash -c '
-                until docker compose exec -T mysql mysqladmin ping -uroot -prootpass --silent;
-                do
-                    sleep 5
-                done'
-
-                echo "Deployment completed."
+                echo "Cleaning old images..."
+                docker image prune -f
                 '''
             }
         }
@@ -112,10 +94,7 @@ pipeline {
         stage('Verify Deployment') {
             steps {
                 sh '''
-                echo "=== Container Status ==="
                 docker compose ps
-
-                echo "=== Testing Flask Endpoint ==="
                 curl -I http://localhost:5000 || true
                 '''
             }
@@ -124,15 +103,11 @@ pipeline {
 
     post {
         success {
-            echo '🚀 Deployment successful!'
-            sh 'docker compose ps'
+            echo "🚀 Deployment successful!"
         }
         failure {
-            echo '❗ Pipeline failed. Investigating logs...'
+            echo "❗ Deployment failed. Logs:"
             sh 'docker compose logs --tail=50 || true'
-        }
-        always {
-            sh 'docker compose logs --tail=20 || true'
         }
     }
 }
