@@ -4,6 +4,7 @@ pipeline {
     environment {
         DOCKER_IMAGE = "captainnoor1/devops-examapp:latest"
         SCANNER_HOME = tool 'sonar-scanner'
+        COMPOSE_PROJECT_NAME = "devopsexamapp"
     }
 
     stages {
@@ -15,10 +16,11 @@ pipeline {
             }
         }
 
-        stage('Verify Docker Compose') {
+        stage('Verify Docker & Compose') {
             steps {
                 sh '''
-                docker compose version || { echo "Docker Compose not available"; exit 1; }
+                docker --version
+                docker compose version
                 '''
             }
         }
@@ -26,7 +28,7 @@ pipeline {
         stage('File System Scan (Trivy)') {
             steps {
                 sh '''
-                trivy fs --security-checks vuln,config \
+                trivy fs --scanners vuln,misconfig \
                 --format table \
                 -o trivy-fs-report.txt .
                 '''
@@ -69,30 +71,40 @@ pipeline {
             }
         }
 
-        stage('Docker Scout Analysis') {
+        stage('Docker Scout Analysis (Optional)') {
             steps {
-                sh """
+                sh '''
+                docker scout version >/dev/null 2>&1 || exit 0
+
                 docker scout quickview ${DOCKER_IMAGE} || true
                 docker scout cves ${DOCKER_IMAGE} || true
                 docker scout recommendations ${DOCKER_IMAGE} || true
-                """
+                '''
             }
         }
 
         stage('Deploy with Docker Compose') {
             steps {
                 sh '''
-                docker compose down --remove-orphans || true
-                docker compose up -d
+                export COMPOSE_PROJECT_NAME=${COMPOSE_PROJECT_NAME}
 
-                echo "Waiting for MySQL..."
+                echo "Cleaning previous deployment..."
+                docker compose down --remove-orphans --volumes || true
+
+                echo "Force removing conflicting containers..."
+                docker rm -f flask_app mysql_db 2>/dev/null || true
+
+                echo "Starting fresh deployment..."
+                docker compose up -d --build
+
+                echo "Waiting for MySQL to be ready..."
                 timeout 120s bash -c '
                 until docker compose exec -T mysql mysqladmin ping -uroot -prootpass --silent;
                 do
                     sleep 5
                 done'
 
-                sleep 10
+                echo "Deployment completed."
                 '''
             }
         }
@@ -101,7 +113,7 @@ pipeline {
             steps {
                 sh '''
                 echo "=== Container Status ==="
-                docker compose ps -a
+                docker compose ps
 
                 echo "=== Testing Flask Endpoint ==="
                 curl -I http://localhost:5000 || true
@@ -114,10 +126,9 @@ pipeline {
         success {
             echo '🚀 Deployment successful!'
             sh 'docker compose ps'
-            sh 'docker images | grep devops-examapp || true'
         }
         failure {
-            echo '❗ Pipeline failed. Check logs above.'
+            echo '❗ Pipeline failed. Investigating logs...'
             sh 'docker compose logs --tail=50 || true'
         }
         always {
