@@ -70,7 +70,7 @@ def submit_exam():
         )
         db.commit()
         
-        # Store name in session for certificate generation
+        #  Store name in session for certificate generation
         session['exam_score'] = score
         
         return render_template('result.html', 
