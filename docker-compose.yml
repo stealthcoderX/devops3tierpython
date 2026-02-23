@@ -1,6 +1,7 @@
 services:
   flask:
-    image: captainnoor1/devops-examapp:${IMAGE_TAG}
+    build:
+      context: ./backend
     ports:
       - "5000:5000"
     environment:
@@ -13,6 +14,9 @@ services:
     depends_on:
       mysql:
         condition: service_healthy
+    volumes:
+      - ./backend:/app
+      - ./frontend:/app/templates
     restart: unless-stopped
 
   mysql:
